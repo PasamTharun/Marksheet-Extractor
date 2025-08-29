@@ -20,5 +20,10 @@ COPY . .
 # Expose port
 EXPOSE $PORT
 
-# Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "$PORT"]
+# Create a script to start the application
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}' >> /app/start.sh && \
+    chmod +x /app/start.sh
+
+# Run the application using the script
+CMD ["/app/start.sh"]
