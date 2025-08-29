@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import traceback
 from typing import Dict, Any, List, Optional
 import asyncio
 from app.services.ocr import OCRService
@@ -27,45 +28,109 @@ class MarksheetExtractor:
         self.llm_service = LLMService()
     
     async def extract(self, file_path: str) -> Dict[str, Any]:
+        """
+        Extract structured data from a marksheet file
+        
+        Args:
+            file_path: Path to the marksheet file (JPG/PNG/PDF)
+            
+        Returns:
+            Dict: Structured data extracted from the marksheet
+        """
         try:
             logger.info(f"Starting extraction for file: {file_path}")
+            logger.info(f"File exists: {os.path.exists(file_path)}")
+            logger.info(f"File size: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'} bytes")
             
+            # Extract text using OCR
+            logger.info("Starting OCR extraction")
             ocr_result = await self.ocr_service.extract_text(file_path)
-            logger.debug(f"OCR extracted text: {ocr_result['text'][:500]}...")
+            logger.info(f"OCR extraction completed. Text length: {len(ocr_result.get('text', ''))}")
+            logger.debug(f"OCR text preview: {ocr_result.get('text', '')[:200]}...")
             
+            # Extract structured data using LLM
+            logger.info("Starting LLM extraction")
             structured_data = await self.llm_service.extract_structured_data(
                 ocr_result["text"], 
                 ocr_result.get("metadata", {})
             )
-            logger.debug(f"LLM structured data: {structured_data}")
+            logger.info(f"LLM extraction completed. Data keys: {list(structured_data.keys())}")
+            logger.debug(f"LLM structured data: {json.dumps(structured_data, indent=2)}")
             
+            # Fallback for subjects if LLM didn't extract any
             if not structured_data.get("subjects"):
                 logger.warning("LLM didn't extract subjects, using fallback method")
                 structured_data["subjects"] = self._extract_subjects_fallback(ocr_result["text"])
-                logger.debug(f"Fallback subjects: {structured_data['subjects']}")
+                logger.info(f"Fallback extracted {len(structured_data['subjects'])} subjects")
             
+            # Post-process to extract missing fields
+            logger.info("Starting post-processing for missing fields")
             structured_data = self._post_process_missing_fields(structured_data, ocr_result["text"])
+            logger.info("Post-processing completed")
             
+            # Calculate confidence scores
+            logger.info("Starting confidence calculation")
             result_with_confidence = await self._add_confidence_scores(
                 structured_data, 
                 ocr_result
             )
+            logger.info("Confidence calculation completed")
             
+            # Validate and clean data
+            logger.info("Starting data validation")
             validated_data = self._validate_and_clean_data(result_with_confidence)
+            logger.info("Data validation completed")
             
             logger.info("Extraction completed successfully")
             return validated_data
             
+        except MarksheetExtractionException as e:
+            logger.error(f"Marksheet extraction error: {str(e)}")
+            logger.error(f"Error details: {traceback.format_exc()}")
+            raise MarksheetExtractionException(
+                status_code=500, 
+                detail=f"Error during extraction: {str(e)}"
+            )
         except Exception as e:
-            logger.error(f"Error during extraction: {str(e)}")
+            logger.error(f"Unexpected error during extraction: {str(e)}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise MarksheetExtractionException(
                 status_code=500, 
                 detail=f"Error during extraction: {str(e)}"
             )
     
     def _extract_subjects_fallback(self, ocr_text: str) -> List[Dict[str, Any]]:
+        logger.info("Using fallback subject extraction")
         subjects = []
         
+        # First, look for the specific expected subjects
+        expected_patterns = [
+            (r'Language\s*[:\-]?\s*(\d+)', "Language"),
+            (r'Science\s*[:\-]?\s*(\d+)', "Science"),
+            (r'India\s*&\s*People\s*[:\-]?\s*(\d+)', "India & People"),
+            (r'India\s+and\s+Her\s+People\s*[:\-]?\s*(\d+)', "India & People"),
+            (r'Additional\s*[:\-]?\s*(\d+)', "Additional"),
+        ]
+        
+        for pattern, subject_name in expected_patterns:
+            matches = re.findall(pattern, ocr_text, re.IGNORECASE)
+            logger.debug(f"Pattern '{pattern}' found {len(matches)} matches for subject '{subject_name}'")
+            for match in matches:
+                if match.isdigit():
+                    subjects.append({
+                        "subject": subject_name,
+                        "max_marks": None,
+                        "obtained_marks": int(match),
+                        "grade": None
+                    })
+        
+        # If we found the expected subjects, return them
+        if len(subjects) >= 3:
+            logger.info(f"Found {len(subjects)} expected subjects, returning them")
+            return subjects
+        
+        # Otherwise, fall back to generic patterns
+        logger.info("Not enough expected subjects found, using generic patterns")
         table_patterns = [
             r'([A-Za-z\s&]+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*([A-Za-z0-9+-]*)',
             r'([A-Za-z\s&]+)\s+(\d+)\s+(\d+)\s+([A-Za-z0-9+-]*)',
@@ -75,6 +140,7 @@ class MarksheetExtractor:
         
         for pattern in table_patterns:
             matches = re.findall(pattern, ocr_text, re.IGNORECASE)
+            logger.debug(f"Generic pattern '{pattern}' found {len(matches)} matches")
             if matches:
                 for match in matches:
                     if len(match) == 4:
@@ -116,6 +182,7 @@ class MarksheetExtractor:
                                 "grade": None
                             })
         
+        # Line-by-line parsing
         lines = ocr_text.split('\n')
         for line in lines:
             subject_match = re.search(r'([A-Za-z\s&]{3,})\s*[:\-]?\s*(\d+)', line)
@@ -131,6 +198,7 @@ class MarksheetExtractor:
                         "grade": None
                     })
         
+        logger.info(f"Generic extraction found {len(subjects)} subjects")
         return subjects
     
     def _is_valid_subject(self, subject_name: str) -> bool:
@@ -152,6 +220,9 @@ class MarksheetExtractor:
         return letter_ratio > 0.5
     
     def _post_process_missing_fields(self, data: Dict[str, Any], ocr_text: str) -> Dict[str, Any]:
+        logger.info("Post-processing missing fields")
+        
+        # Extract DOB if missing
         if not data["candidate_details"]["dob"]:
             dob_patterns = [
                 r'Date of Birth[:\s]+(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
@@ -167,8 +238,10 @@ class MarksheetExtractor:
                     dob = match.group(1)
                     dob = re.sub(r'[/]', '-', dob)
                     data["candidate_details"]["dob"] = dob
+                    logger.info(f"Found DOB: {dob}")
                     break
         
+        # Extract registration number if missing
         if not data["candidate_details"]["registration_no"]:
             reg_patterns = [
                 r'Registration No[:\s]+([A-Za-z0-9\-\/]+)',
@@ -181,35 +254,10 @@ class MarksheetExtractor:
                 match = re.search(pattern, ocr_text, re.IGNORECASE)
                 if match:
                     data["candidate_details"]["registration_no"] = match.group(1).strip()
+                    logger.info(f"Found registration number: {match.group(1)}")
                     break
         
-        if not data["overall_result"]["percentage"]:
-            percentage_patterns = [
-                r'Percentage[:\s]+(\d+(?:\.\d+)?)%',
-                r'(\d+(?:\.\d+)?)%\s*(?i:Percentage|Percent)',
-                r'Overall[:\s]+(\d+(?:\.\d+)?)%',
-                r'Total Percentage[:\s]+(\d+(?:\.\d+)?)%',
-            ]
-            
-            for pattern in percentage_patterns:
-                match = re.search(pattern, ocr_text, re.IGNORECASE)
-                if match:
-                    data["overall_result"]["percentage"] = float(match.group(1))
-                    break
-        
-        if not data["overall_result"]["grade"]:
-            grade_patterns = [
-                r'Grade[:\s]+([A-F][\+\-]?)',
-                r'Overall Grade[:\s]+([A-F][\+\-]?)',
-                r'Final Grade[:\s]+([A-F][\+\-]?)',
-            ]
-            
-            for pattern in grade_patterns:
-                match = re.search(pattern, ocr_text, re.IGNORECASE)
-                if match:
-                    data["overall_result"]["grade"] = match.group(1).strip()
-                    break
-        
+        # Extract issue date if missing
         if not data["issue_details"]["date"]:
             date_patterns = [
                 r'Date of Issue[:\s]+(\d{1,2}[-/]\d{1,2}[-/]\d{4})',
@@ -224,8 +272,10 @@ class MarksheetExtractor:
                     date = match.group(1)
                     date = re.sub(r'[/]', '-', date)
                     data["issue_details"]["date"] = date
+                    logger.info(f"Found issue date: {date}")
                     break
         
+        # Extract place if missing
         if not data["issue_details"]["place"]:
             place_patterns = [
                 r'Place[:\s]+([A-Za-z\s]+)',
@@ -237,6 +287,7 @@ class MarksheetExtractor:
                 match = re.search(pattern, ocr_text, re.IGNORECASE)
                 if match:
                     data["issue_details"]["place"] = match.group(1).strip()
+                    logger.info(f"Found issue place: {match.group(1)}")
                     break
         
         return data
@@ -246,8 +297,10 @@ class MarksheetExtractor:
         structured_data: Dict[str, Any], 
         ocr_result: Dict[str, Any]
     ) -> Dict[str, Any]:
+        logger.info("Adding confidence scores")
         result = {}
         
+        # Add confidence to candidate details
         result["candidate_details"] = {}
         for field, value in structured_data.get("candidate_details", {}).items():
             result["candidate_details"][field] = {
@@ -259,6 +312,7 @@ class MarksheetExtractor:
                 )
             }
         
+        # Add confidence to subjects
         result["subjects"] = []
         for subject in structured_data.get("subjects", []):
             subject_with_confidence = {}
@@ -276,6 +330,7 @@ class MarksheetExtractor:
             
             result["subjects"].append(subject_with_confidence)
         
+        # Add confidence to overall result
         result["overall_result"] = {}
         for field, value in structured_data.get("overall_result", {}).items():
             result["overall_result"][field] = {
@@ -287,6 +342,7 @@ class MarksheetExtractor:
                 )
             }
         
+        # Add confidence to issue details
         result["issue_details"] = {}
         for field, value in structured_data.get("issue_details", {}).items():
             result["issue_details"][field] = {
@@ -301,13 +357,18 @@ class MarksheetExtractor:
         return result
     
     def _validate_and_clean_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info("Validating and cleaning data")
+        
+        # Filter out subjects with empty or None subject names
         valid_subjects = []
         for subject in data.get("subjects", []):
             if subject.get("subject"):
                 valid_subjects.append(subject)
         
+        # Replace subjects with valid ones
         data["subjects"] = valid_subjects
         
+        # Ensure all required fields have proper structure
         for field in ["candidate_details", "overall_result", "issue_details"]:
             if field not in data:
                 data[field] = {}

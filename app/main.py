@@ -46,10 +46,10 @@ app.add_exception_handler(RequestValidationError, validation_exception_handler)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {str(exc)}")
-    logger.error(traceback.format_exc())
+    logger.error(f"Full traceback: {traceback.format_exc()}")
     return JSONResponse(
         status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"}
+        content={"detail": f"Internal server error: {str(exc)}", "traceback": traceback.format_exc()}
     )
 
 # Request logging middleware

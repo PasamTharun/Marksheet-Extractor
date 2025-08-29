@@ -27,15 +27,22 @@ async def extract_marksheet(
     Extract structured data from a single marksheet (JPG/PNG/PDF)
     """
     try:
+        logger.info(f"Received file upload request: {file.filename}")
+        logger.info(f"File content type: {file.content_type}")
+        logger.info(f"File size: {file.size}")
+        
         # Validate file
         validate_file(file)
         
         # Create temporary file
         temp_file_path = get_temp_file_path(file.filename)
+        logger.info(f"Created temporary file: {temp_file_path}")
         
         # Save uploaded file to temp location
         with open(temp_file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        
+        logger.info(f"Saved file to temporary location")
         
         # Extract data
         extractor = MarksheetExtractor()
@@ -43,8 +50,11 @@ async def extract_marksheet(
         result_dict = await extractor.extract(temp_file_path)
         processing_time = time.time() - start_time
         
+        logger.info(f"Extraction completed in {processing_time:.2f} seconds")
+        
         # Schedule cleanup
         background_tasks.add_task(os.remove, temp_file_path)
+        logger.info("Scheduled file cleanup")
         
         # Create response with additional metadata
         result = ExtractionResponse(
@@ -57,6 +67,7 @@ async def extract_marksheet(
             file_size=file.size
         )
         
+        logger.info("Returning extraction response")
         return result
         
     except MarksheetExtractionException as e:
@@ -64,6 +75,7 @@ async def extract_marksheet(
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except Exception as e:
         logger.error(f"Unexpected error during extraction: {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/batch-extract", response_model=BatchExtractionResponse)
@@ -75,7 +87,10 @@ async def batch_extract_marksheets(
     Extract structured data from multiple marksheets in batch
     """
     try:
+        logger.info(f"Received batch upload request with {len(files)} files")
+        
         if len(files) > settings.MAX_BATCH_SIZE:
+            logger.error(f"Batch size {len(files)} exceeds maximum limit of {settings.MAX_BATCH_SIZE}")
             raise HTTPException(
                 status_code=400, 
                 detail=f"Batch size exceeds maximum limit of {settings.MAX_BATCH_SIZE}"
@@ -87,6 +102,8 @@ async def batch_extract_marksheets(
         # Process each file
         for file in files:
             try:
+                logger.info(f"Processing file: {file.filename}")
+                
                 # Validate file
                 validate_file(file)
                 
@@ -116,6 +133,7 @@ async def batch_extract_marksheets(
                 )
                 
                 results.append(result)
+                logger.info(f"Successfully processed {file.filename}")
                 
             except Exception as e:
                 logger.error(f"Error processing {file.filename}: {str(e)}")
@@ -128,10 +146,12 @@ async def batch_extract_marksheets(
         for temp_file_path in temp_file_paths:
             background_tasks.add_task(os.remove, temp_file_path)
         
+        logger.info(f"Batch processing completed. Results: {len(results)} files processed")
         return {"results": results}
         
     except Exception as e:
         logger.error(f"Error during batch extraction: {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.get("/health", response_model=HealthResponse)
@@ -139,4 +159,5 @@ async def health_check():
     """
     Health check endpoint
     """
+    logger.info("Health check requested")
     return {"status": "healthy", "version": "1.0.0"}

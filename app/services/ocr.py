@@ -9,6 +9,9 @@ from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 from app.core.config import settings
 from app.core.exceptions import MarksheetExtractionException
+import logging
+
+logger = logging.getLogger(__name__)
 
 class OCRService:
     """
@@ -30,20 +33,28 @@ class OCRService:
             Dict: Extracted text and metadata
         """
         try:
+            logger.info(f"Starting text extraction for file: {file_path}")
+            
             # Determine file type
             file_extension = os.path.splitext(file_path)[1].lower()
+            logger.info(f"File extension: {file_extension}")
             
             if file_extension == ".pdf":
+                logger.info("Processing as PDF file")
                 return await self._extract_from_pdf(file_path)
             elif file_extension in [".jpg", ".jpeg", ".png", ".webp"]:
+                logger.info("Processing as image file")
                 return await self._extract_from_image(file_path)
             else:
+                logger.error(f"Unsupported file type: {file_extension}")
                 raise MarksheetExtractionException(
                     status_code=400,
                     detail=f"Unsupported file type: {file_extension}"
                 )
                 
         except Exception as e:
+            logger.error(f"Error during text extraction: {str(e)}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise MarksheetExtractionException(
                 status_code=500,
                 detail=f"Error during text extraction: {str(e)}"
@@ -165,17 +176,21 @@ class OCRService:
         # Convert to grayscale
         gray = cv2.cvtColor(open_cv_image, cv2.COLOR_BGR2GRAY)
         
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Apply denoising
+        denoised = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
         
-        # Apply adaptive thresholding
+        # Apply adaptive thresholding with different parameters
         thresh = cv2.adaptiveThreshold(
-            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
             cv2.THRESH_BINARY, 11, 2
         )
         
+        # Additional processing for better text detection
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        processed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+        
         # Convert back to PIL Image
-        return Image.fromarray(thresh)
+        return Image.fromarray(processed)
     
     async def _ocr_image(self, image: Image.Image) -> str:
         """
@@ -187,11 +202,36 @@ class OCRService:
         Returns:
             str: Extracted text
         """
-        # Use Tesseract to extract text
-        text = pytesseract.image_to_string(
-            image,
-            lang='eng',  # English language
-            config='--oem 3 --psm 6'  # OEM 3: Default, PSM 6: Assume a single uniform block of text
-        )
+        # Try multiple PSM modes for better results
+        psm_modes = [6, 3, 4, 11]  # Different page segmentation modes
+        best_text = ""
+        best_confidence = 0
         
-        return text
+        for psm in psm_modes:
+            try:
+                # Use Tesseract to extract text with confidence data
+                data = pytesseract.image_to_data(
+                    image,
+                    lang='eng',
+                    config=f'--oem 3 --psm {psm}',
+                    output_type=pytesseract.Output.DICT
+                )
+                
+                # Calculate average confidence
+                confidences = [int(c) for c in data['conf'] if int(c) > 0]
+                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+                
+                # Get text
+                text = ' '.join([t for t in data['text'] if t.strip()])
+                
+                # Keep the best result
+                if avg_confidence > best_confidence:
+                    best_confidence = avg_confidence
+                    best_text = text
+                    
+            except Exception as e:
+                logger.warning(f"PSM {psm} failed: {str(e)}")
+                continue
+        
+        logger.debug(f"Best OCR confidence: {best_confidence:.2f}%")
+        return best_text

@@ -16,21 +16,26 @@ class LLMService:
     Service for using LLM (Gemini) to extract structured data from OCR text
     """
     def __init__(self):
+        # Initialize Gemini model
         try:
-            if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY == "yourapikey":
+            if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY == "your_gemini_api_key_here":
                 logger.error("Gemini API key is not set properly")
                 raise ValueError("Gemini API key is not set properly")
             
+            logger.info("Initializing Gemini model with API key")
             genai.configure(api_key=settings.GEMINI_API_KEY)
+            
+            # Try different model names in order of preference
             model_names = [
-                "gemini-1.5-flash",
-                "gemini-1.5-pro",
-                "gemini-pro",
+                "gemini-1.5-flash",  # Latest and fastest
+                "gemini-1.5-pro",    # Latest and most capable
+                "gemini-pro",         # Legacy model name
             ]
             
             self.model = None
             for model_name in model_names:
                 try:
+                    logger.info(f"Trying to initialize model: {model_name}")
                     self.model = genai.GenerativeModel(model_name)
                     logger.info(f"Gemini model initialized successfully with model: {model_name}")
                     break
@@ -44,7 +49,7 @@ class LLMService:
                 
         except Exception as e:
             logger.error(f"Error initializing Gemini model: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise
     
     async def extract_structured_data(
@@ -52,21 +57,41 @@ class LLMService:
         ocr_text: str, 
         metadata: Dict[str, Any] = {}
     ) -> Dict[str, Any]:
+        """
+        Extract structured data from OCR text using LLM
+        
+        Args:
+            ocr_text: Text extracted from OCR
+            metadata: Additional metadata from OCR
+            
+        Returns:
+            Dict: Structured data extracted by the LLM
+        """
         try:
             logger.info("Starting LLM extraction")
+            logger.info(f"OCR text length: {len(ocr_text)}")
             
+            # Clean OCR text
             cleaned_text = self._clean_ocr_text(ocr_text)
             logger.info(f"Cleaned OCR text length: {len(cleaned_text)}")
             
+            # Create prompt
             prompt = self._create_prompt(cleaned_text)
             logger.info("Created prompt for LLM")
+            logger.debug(f"Prompt preview: {prompt[:500]}...")
             
+            # Generate response
+            logger.info("Generating response from Gemini")
             response = await self._generate_response(prompt)
-            logger.info("Generated response from LLM")
+            logger.info("Generated response from Gemini")
+            logger.debug(f"Response preview: {response[:500]}...")
             
+            # Parse the response
             structured_data = self._parse_response(response)
             logger.info("Parsed LLM response")
+            logger.debug(f"Structured data: {json.dumps(structured_data, indent=2)}")
             
+            # Post-process the data
             processed_data = self._post_process_data(structured_data)
             logger.info("Post-processed data")
             
@@ -74,7 +99,7 @@ class LLMService:
             
         except Exception as e:
             logger.error(f"Error during LLM extraction: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise MarksheetExtractionException(
                 status_code=500,
                 detail=f"Error during LLM extraction: {str(e)}"
@@ -175,36 +200,60 @@ class LLMService:
         """
     
     async def _generate_response(self, prompt: str) -> str:
+        """
+        Generate a response from the LLM
+        
+        Args:
+            prompt: Prompt for the LLM
+            
+        Returns:
+            str: Response from the LLM
+        """
         try:
             logger.info("Generating content from Gemini")
+            # Generate content
             response = self.model.generate_content(prompt)
             logger.info("Generated content successfully")
             return response.text
         except Exception as e:
             logger.error(f"Error generating LLM response: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             raise MarksheetExtractionException(
                 status_code=500,
                 detail=f"Error generating LLM response: {str(e)}"
             )
     
     def _parse_response(self, response: str) -> Dict[str, Any]:
+        """
+        Parse the LLM response to extract structured data
+        
+        Args:
+            response: Response from the LLM
+            
+        Returns:
+            Dict: Structured data
+        """
         try:
             logger.info("Parsing LLM response")
+            # Extract JSON from the response
+            # The response might contain markdown code blocks or other text
             json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
             
             if json_match:
                 json_str = json_match.group(1)
                 logger.info("Found JSON in code block")
             else:
+                # If no code block, try to find a JSON object directly
                 json_match = re.search(r'\{.*\}', response, re.DOTALL)
                 if json_match:
                     json_str = json_match.group(0)
                     logger.info("Found JSON directly in response")
                 else:
+                    # If no JSON found, return empty structure
                     logger.warning("No JSON found in response, returning empty structure")
                     return self._get_empty_structure()
             
+            # Parse JSON
             data = json.loads(json_str)
             logger.info("Successfully parsed JSON")
             return data
@@ -217,6 +266,12 @@ class LLMService:
             )
     
     def _get_empty_structure(self) -> Dict[str, Any]:
+        """
+        Get an empty structure for the extracted data
+        
+        Returns:
+            Dict: Empty structure
+        """
         return {
             "candidate_details": {
                 "name": None,
@@ -241,32 +296,62 @@ class LLMService:
         }
     
     def _clean_ocr_text(self, text: str) -> str:
+        """
+        Clean OCR text to improve LLM processing
+        
+        Args:
+            text: Raw OCR text
+            
+        Returns:
+            str: Cleaned text
+        """
+        # Remove extra whitespace
         text = re.sub(r'\s+', ' ', text)
+        
+        # Remove special characters that might confuse the LLM
         text = re.sub(r'[^\w\s\.\,\-\:\;\(\)\/\%\@\#\$\&\*\+\=\?\!\[\]\{\}\<\>\~\`\|\\]', '', text)
-        max_chars = 8000
+        
+        # Limit text length to avoid token limits
+        max_chars = 8000  # Adjust based on model's context window
         if len(text) > max_chars:
             text = text[:max_chars] + "..."
+        
         return text
     
     def _post_process_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Post-process the structured data extracted by the LLM
+        
+        Args:
+            data: Raw structured data from LLM
+            
+        Returns:
+            Dict: Processed structured data
+        """
         logger.info("Post-processing data")
         
+        # Process candidate details
         for field in data.get("candidate_details", {}):
             if data["candidate_details"][field]:
                 data["candidate_details"][field] = self._clean_field_value(
                     data["candidate_details"][field]
                 )
         
+        # Process subjects
         for subject in data.get("subjects", []):
             for field in subject:
                 if field in ["max_marks", "obtained_marks"] and subject[field]:
+                    # Convert marks to numbers
                     try:
                         subject[field] = float(subject[field])
                     except (ValueError, TypeError):
                         subject[field] = None
-                elif field in ["grade", "subject"] and subject[field]:
+                elif field == "grade" and subject[field]:
+                    subject[field] = self._clean_field_value(subject[field])
+                elif field == "subject" and subject[field]:
                     subject[field] = self._clean_field_value(subject[field])
         
+        # Process overall result
         for field in data.get("overall_result", {}):
             if data["overall_result"][field]:
                 if field == "percentage":
@@ -279,6 +364,7 @@ class LLMService:
                         data["overall_result"][field]
                     )
         
+        # Process issue details
         for field in data.get("issue_details", {}):
             if data["issue_details"][field]:
                 data["issue_details"][field] = self._clean_field_value(
@@ -289,11 +375,22 @@ class LLMService:
         return data
     
     def _clean_field_value(self, value: str) -> str:
+        """
+        Clean a field value
+        
+        Args:
+            value: Field value to clean
+            
+        Returns:
+            str: Cleaned field value
+        """
         if not value:
             return value
         
+        # Remove extra whitespace
         value = re.sub(r'\s+', ' ', value).strip()
         
+        # Remove quotes if they surround the entire value
         if (value.startswith('"') and value.endswith('"')) or \
            (value.startswith("'") and value.endswith("'")):
             value = value[1:-1].strip()
