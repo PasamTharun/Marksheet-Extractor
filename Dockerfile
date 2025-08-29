@@ -1,10 +1,19 @@
 FROM python:3.9-slim
 
-# Install system dependencies
+# Install system dependencies including OpenCV requirements
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-eng \
     libtesseract-dev \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgtk-3-dev \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -17,13 +26,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose port
-EXPOSE $PORT
-
-# Create a script to start the application
+# Create a startup script
 RUN echo '#!/bin/bash' > /app/start.sh && \
-    echo 'uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}' >> /app/start.sh && \
+    echo 'PORT=${PORT:-8000}' >> /app/start.sh && \
+    echo 'exec uvicorn app.main:app --host 0.0.0.0 --port $PORT' >> /app/start.sh && \
     chmod +x /app/start.sh
 
-# Run the application using the script
+# Expose port
+EXPOSE 8000
+
+# Run the startup script
 CMD ["/app/start.sh"]
