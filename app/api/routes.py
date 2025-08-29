@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, BackgroundTasks
 from typing import List, Optional
+from app.utils.file_utils import validate_file, get_temp_file_path
 import os
 import uuid
 import shutil
@@ -161,3 +162,34 @@ async def health_check():
     """
     logger.info("Health check requested")
     return {"status": "healthy", "version": "1.0.0"}
+@router.get("/debug-ocr")
+async def debug_ocr(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
+    """
+    Debug endpoint to check OCR text extraction
+    """
+    try:
+        # Validate file
+        validate_file(file)
+        
+        # Create temporary file
+        temp_file_path = get_temp_file_path(file.filename)
+        
+        # Save uploaded file to temp location
+        with open(temp_file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Extract OCR text
+        extractor = MarksheetExtractor()
+        ocr_result = await extractor.ocr_service.extract_text(temp_file_path)
+        
+        # Schedule cleanup
+        background_tasks.add_task(os.remove, temp_file_path)
+        
+        return {
+            "ocr_text": ocr_result["text"],
+            "text_length": len(ocr_result["text"]),
+            "metadata": ocr_result["metadata"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")

@@ -46,7 +46,9 @@ class MarksheetExtractor:
             logger.info("Starting OCR extraction")
             ocr_result = await self.ocr_service.extract_text(file_path)
             logger.info(f"OCR extraction completed. Text length: {len(ocr_result.get('text', ''))}")
-            logger.debug(f"OCR text preview: {ocr_result.get('text', '')[:200]}...")
+            
+            # DEBUG: Save OCR result to logs
+            logger.info(f"Full OCR text: {ocr_result.get('text', '')}")
             
             # Extract structured data using LLM
             logger.info("Starting LLM extraction")
@@ -101,15 +103,19 @@ class MarksheetExtractor:
     
     def _extract_subjects_fallback(self, ocr_text: str) -> List[Dict[str, Any]]:
         logger.info("Using fallback subject extraction")
+        logger.info(f"OCR text for fallback: {ocr_text}")
         subjects = []
         
         # First, look for the specific expected subjects
         expected_patterns = [
-            (r'Language\s*[:\-]?\s*(\d+)', "Language"),
-            (r'Science\s*[:\-]?\s*(\d+)', "Science"),
-            (r'India\s*&\s*People\s*[:\-]?\s*(\d+)', "India & People"),
-            (r'India\s+and\s+Her\s+People\s*[:\-]?\s*(\d+)', "India & People"),
-            (r'Additional\s*[:\-]?\s*(\d+)', "Additional"),
+            (r'FIRST LANGUAGE\s*[:\-]?\s*(\d+)', "FIRST LANGUAGE"),
+            (r'SECOND LANGUAGE\s*[:\-]?\s*(\d+)', "SECOND LANGUAGE"),
+            (r'MATHS\s*[:\-]?\s*(\d+)', "MATHS"),
+            (r'SCIENCE\s*[:\-]?\s*(\d+)', "SCIENCE"),
+            (r'HISTORY\s*\(WRITTEN\)\s*[:\-]?\s*(\d+)', "HISTORY (WRITTEN)"),
+            (r'HISTORY\s*\(ORAL\)\s*[:\-]?\s*(\d+)', "HISTORY (ORAL)"),
+            (r'GEOGRAPHY\s*\(WRITTEN\)\s*[:\-]?\s*(\d+)', "GEOGRAPHY (WRITTEN)"),
+            (r'GEOGRAPHY\s*\(ORAL\)\s*[:\-]?\s*(\d+)', "GEOGRAPHY (ORAL)"),
         ]
         
         for pattern, subject_name in expected_patterns:
@@ -136,6 +142,7 @@ class MarksheetExtractor:
             r'([A-Za-z\s&]+)\s+(\d+)\s+(\d+)\s+([A-Za-z0-9+-]*)',
             r'([A-Za-z\s&]+):\s*(\d+)\s*/\s*(\d+)',
             r'([A-Za-z\s&]+)\s*-\s*(\d+)',
+            r'([A-Za-z\s&]+)\s+(\d+)',  # Simple pattern: SubjectName Marks
         ]
         
         for pattern in table_patterns:
@@ -182,30 +189,50 @@ class MarksheetExtractor:
                                 "grade": None
                             })
         
-        # Line-by-line parsing
+        # Line-by-line parsing for any subject pattern
         lines = ocr_text.split('\n')
         for line in lines:
-            subject_match = re.search(r'([A-Za-z\s&]{3,})\s*[:\-]?\s*(\d+)', line)
-            if subject_match:
-                subject_name = subject_match.group(1).strip()
-                marks = subject_match.group(2).strip()
-                
-                if self._is_valid_subject(subject_name):
-                    subjects.append({
-                        "subject": subject_name,
-                        "max_marks": None,
-                        "obtained_marks": int(marks) if marks.isdigit() else None,
-                        "grade": None
-                    })
+            # Try different subject patterns
+            subject_patterns = [
+                r'([A-Za-z\s&]+)\s*[:\-]?\s*(\d+)',  # Subject: Marks
+                r'([A-Za-z\s&]+)\s+(\d+)',  # Subject Marks
+                r'([A-Za-z\s&]+)\s*(\d+)\s*/\s*(\d+)',  # Subject: Marks/Max
+            ]
+            
+            for pattern in subject_patterns:
+                match = re.search(pattern, line)
+                if match:
+                    subject_name = match.group(1).strip()
+                    
+                    if len(match.groups()) == 2:  # Simple pattern
+                        marks = match.group(2).strip()
+                        if self._is_valid_subject(subject_name):
+                            subjects.append({
+                                "subject": subject_name,
+                                "max_marks": None,
+                                "obtained_marks": int(marks) if marks.isdigit() else None,
+                                "grade": None
+                            })
+                    
+                    elif len(match.groups()) == 3:  # Subject: Marks/Max
+                        obtained_marks = match.group(2).strip()
+                        max_marks = match.group(3).strip()
+                        if self._is_valid_subject(subject_name):
+                            subjects.append({
+                                "subject": subject_name,
+                                "max_marks": int(max_marks) if max_marks.isdigit() else None,
+                                "obtained_marks": int(obtained_marks) if obtained_marks.isdigit() else None,
+                                "grade": None
+                            })
         
-        logger.info(f"Generic extraction found {len(subjects)} subjects")
+        logger.info(f"Generic extraction found {len(subjects)} subjects: {[s['subject'] for s in subjects]}")
         return subjects
     
     def _is_valid_subject(self, subject_name: str) -> bool:
         exclude_terms = [
             'total', 'grand total', 'result', 'division', 'percentage',
             'grade', 'marks', 'obtained', 'maximum', 'subject', 'name',
-            'roll', 'registration', 'board', 'school', 'college'
+            'roll', 'registration', 'board', 'school', 'college', 'first', 'second'
         ]
         
         subject_lower = subject_name.lower()
@@ -221,6 +248,37 @@ class MarksheetExtractor:
     
     def _post_process_missing_fields(self, data: Dict[str, Any], ocr_text: str) -> Dict[str, Any]:
         logger.info("Post-processing missing fields")
+        logger.info(f"OCR text for post-processing: {ocr_text}")
+        
+        # Extract name if missing
+        if not data["candidate_details"]["name"]:
+            name_patterns = [
+                r'Name[:\s]+([A-Za-z\s]+)',
+                r'Candidate[:\s]+([A-Za-z\s]+)',
+                r'Student[:\s]+([A-Za-z\s]+)',
+            ]
+            
+            for pattern in name_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["candidate_details"]["name"] = match.group(1).strip()
+                    logger.info(f"Found name: {match.group(1)}")
+                    break
+        
+        # Extract father_name if missing
+        if not data["candidate_details"]["father_name"]:
+            father_patterns = [
+                r'Father\'s Name[:\s]+([A-Za-z\s]+)',
+                r'Father[:\s]+([A-Za-z\s]+)',
+                r'S/O[:\s]+([A-Za-z\s]+)',
+            ]
+            
+            for pattern in father_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["candidate_details"]["father_name"] = match.group(1).strip()
+                    logger.info(f"Found father name: {match.group(1)}")
+                    break
         
         # Extract DOB if missing
         if not data["candidate_details"]["dob"]:
@@ -241,7 +299,22 @@ class MarksheetExtractor:
                     logger.info(f"Found DOB: {dob}")
                     break
         
-        # Extract registration number if missing
+        # Extract roll_no if missing
+        if not data["candidate_details"]["roll_no"]:
+            roll_patterns = [
+                r'Roll No[:\s]+([A-Za-z0-9\-\/]+)',
+                r'Roll Number[:\s]+([A-Za-z0-9\-\/]+)',
+                r'Roll[:\s]+([A-Za-z0-9\-\/]+)',
+            ]
+            
+            for pattern in roll_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["candidate_details"]["roll_no"] = match.group(1).strip()
+                    logger.info(f"Found roll number: {match.group(1)}")
+                    break
+        
+        # Extract registration_no if missing
         if not data["candidate_details"]["registration_no"]:
             reg_patterns = [
                 r'Registration No[:\s]+([A-Za-z0-9\-\/]+)',
@@ -255,6 +328,82 @@ class MarksheetExtractor:
                 if match:
                     data["candidate_details"]["registration_no"] = match.group(1).strip()
                     logger.info(f"Found registration number: {match.group(1)}")
+                    break
+        
+        # Extract exam_year if missing
+        if not data["candidate_details"]["exam_year"]:
+            year_patterns = [
+                r'Year[:\s]+(19|20\d{2})',
+                r'Exam Year[:\s]+(19|20\d{2})',
+                r'Examination Year[:\s]+(19|20\d{2})',
+                r'(19|20\d{2})\s*(?i:Year|Exam)',
+            ]
+            
+            for pattern in year_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["candidate_details"]["exam_year"] = match.group(1)
+                    logger.info(f"Found exam year: {match.group(1)}")
+                    break
+        
+        # Extract board if missing
+        if not data["candidate_details"]["board"]:
+            board_patterns = [
+                r'Board[:\s]+([A-Za-z\s&\-]+)',
+                r'University[:\s]+([A-Za-z\s&\-]+)',
+                r'Council[:\s]+([A-Za-z\s&\-]+)',
+            ]
+            
+            for pattern in board_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["candidate_details"]["board"] = match.group(1).strip()
+                    logger.info(f"Found board: {match.group(1)}")
+                    break
+        
+        # Extract institution if missing
+        if not data["candidate_details"]["institution"]:
+            institution_patterns = [
+                r'School[:\s]+([A-Za-z\s&\-\.]+)',
+                r'College[:\s]+([A-Za-z\s&\-\.]+)',
+                r'Institution[:\s]+([A-Za-z\s&\-\.]+)',
+            ]
+            
+            for pattern in institution_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["candidate_details"]["institution"] = match.group(1).strip()
+                    logger.info(f"Found institution: {match.group(1)}")
+                    break
+        
+        # Extract division if missing
+        if not data["overall_result"]["division"]:
+            division_patterns = [
+                r'Division[:\s]+(First|Second|Third|Distinction)',
+                r'Class[:\s]+(First|Second|Third|Distinction)',
+                r'Result[:\s]+(First|Second|Third|Distinction)',
+            ]
+            
+            for pattern in division_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["overall_result"]["division"] = match.group(1)
+                    logger.info(f"Found division: {match.group(1)}")
+                    break
+        
+        # Extract percentage if missing
+        if not data["overall_result"]["percentage"]:
+            percentage_patterns = [
+                r'Percentage[:\s]+(\d+(?:\.\d+)?)%',
+                r'(\d+(?:\.\d+)?)%\s*(?i:Percentage|Percent)',
+                r'Overall[:\s]+(\d+(?:\.\d+)?)%',
+            ]
+            
+            for pattern in percentage_patterns:
+                match = re.search(pattern, ocr_text, re.IGNORECASE)
+                if match:
+                    data["overall_result"]["percentage"] = float(match.group(1))
+                    logger.info(f"Found percentage: {match.group(1)}")
                     break
         
         # Extract issue date if missing
