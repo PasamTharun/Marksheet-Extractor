@@ -249,10 +249,6 @@ We welcome contributions! Please follow these steps:
    pre-commit install
    ```
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 ## 🙏 Acknowledgments
 
 - **Google Gemini** for providing the powerful LLM capabilities
@@ -263,3 +259,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 <div align="center">
   Made with ❤️ by Pasam Tharun
 </div>
+
