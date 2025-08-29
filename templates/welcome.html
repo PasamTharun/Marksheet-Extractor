@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marksheet Extractor API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            background-color: #f9f9f9;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .error {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Marksheet Extractor API Test</h1>
+        
+        <div class="form-group">
+            <label for="file">Select Marksheet File:</label>
+            <input type="file" id="file" accept="image/jpeg,image/png,image/webp,application/pdf">
+        </div>
+        
+        <button onclick="testApi()">Test API</button>
+        
+        <div id="result" class="result" style="display: none;"></div>
+    </div>
+    <script>
+        async function testApi() {
+            const fileInput = document.getElementById('file');
+            const resultDiv = document.getElementById('result');
+            
+            if (!fileInput.files || fileInput.files.length === 0) {
+                resultDiv.textContent = 'Please select a file';
+                resultDiv.className = 'result error';
+                resultDiv.style.display = 'block';
+                return;
+            }
+            
+            const file = fileInput.files[0];
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            resultDiv.textContent = 'Processing...';
+            resultDiv.className = 'result';
+            resultDiv.style.display = 'block';
+            
+            try {
+                const response = await fetch('/api/v1/extract', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    resultDiv.textContent = JSON.stringify(data, null, 2);
+                } else {
+                    const errorData = await response.json();
+                    resultDiv.textContent = `Error: ${errorData.detail}`;
+                    resultDiv.className = 'result error';
+                }
+            } catch (error) {
+                resultDiv.textContent = `Error: ${error.message}`;
+                resultDiv.className = 'result error';
+            }
+        }
+    </script>
+</body>
+</html>
